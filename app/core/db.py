@@ -92,6 +92,41 @@ def update_status_field(device_id, field, value):
     conn.commit()
     conn.close()
 
+# ---------------------------------------------------------
+#  Capabilities
+# ---------------------------------------------------------
+
+def get_capabilities(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT capability FROM capabilities WHERE device_id = ?",
+        (device_id,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+def add_capability(device_id, capability):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO capabilities (device_id, capability) VALUES (?, ?)",
+        (device_id, capability)
+    )
+    conn.commit()
+    conn.close()
+
+def clear_capabilities(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM capabilities WHERE device_id = ?",
+        (device_id,)
+    )
+    conn.commit()
+    conn.close()
+
 
 # ---------------------------------------------------------
 #  Generic helpers
@@ -173,6 +208,16 @@ def ensure_schema():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS capabilities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER NOT NULL,
+        capability TEXT NOT NULL,
+        FOREIGN KEY(device_id) REFERENCES devices(id)
+);
+
+""")
+
+
     conn.commit()
     conn.close()
-
