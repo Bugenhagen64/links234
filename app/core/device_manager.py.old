@@ -1,0 +1,261 @@
+# device_manager.py
+
+import time
+from datetime import datetime
+
+import app.core.db as db
+
+# Drivrutiner (protokoll)
+from app.drivers import nec_net_driver
+from app.drivers import nec_serial_driver
+from app.drivers import pjlink_net_driver
+
+
+class DeviceManager:
+    """
+    Central logik:
+    - Discovery (net_pjlink → serial_nec)
+    - Val av driver baserat på device['driver']
+    - Timeout- och reachable-hantering
+    - Status-cache via db.py
+    """
+
+    def __init__(self):
+        db.init_db()
+        self.device = db.get_device()
+        if self.device is None:
+            db.save_device_info(reachable=0, timeout=5)
+            self.device = db.get_device()
+
+    # ---------------------------------------------------------
+    #  Driver selection
+    # ---------------------------------------------------------
+
+    def _get_driver_module(self):
+        """
+        Returnera rätt driver-modul baserat på device['driver'].
+        """
+        if not self.device:
+            return None
+
+        driver_name = self.device["driver"]
+
+        if driver_name == "net_pjlink":
+            return pjlink_net_driver
+
+        if driver_name == "serial_nec":
+            return nec_serial_driver
+
+        if driver_name == "net_nec":
+            # return nec_net_driver
+            raise NotImplementedError("NEC over TCP not implemented yet")
+
+        return None
+
+    # ---------------------------------------------------------
+    #  Discovery
+    # ---------------------------------------------------------
+
+    def discover(self):
+        """
+        Försök hitta en fungerande kombination av transport + protokoll.
+        Ordning:
+          1) net_pjlink (PJLink över TCP)
+          2) serial_nec (NEC över RS232)
+        """
+        print("Starting discovery...")
+
+        if not self.device:
+            print("No device configured. Run setup first.")
+            return False
+
+        timeout = self.device["timeout"] or 5
+
+
+        # 1) net_pjlink
+        if self.device["host"]:
+            try:
+                print("Trying net_pjlink...")
+                info = pjlink_driver.discover(
+                    host=self.device["host"],
+                    password=self.device["password"],
+                    timeout=timeout
+                )
+
+                db.save_device_info(
+                    brand=info.get("brand"),
+                    model=info.get("model"),
+                    transport="net",
+                    protocol="pjlink",
+                    driver="net_pjlink",
+                    reachable=1,
+                    last_seen=datetime.utcnow().isoformat()
+                )
+
+                self.device = db.get_device()
+
+                if info.get("inputs"):
+                    db.set_inputs(self.device["id"], info["inputs"])
+
+                if info.get("capabilities"):
+                    db.set_capabilities(self.device["id"], **info["capabilities"])
+
+                db.log_discovery("net_pjlink", "success")
+                return True
+
+            except Exception as e:
+                db.log_discovery("net_pjlink", f"fail: {e}")
+
+        # 2) serial_nec
+        if self.device["serial_port"]:
+            try:
+                print("Trying serial_nec...")
+                info = nec_serial_driver.discover(
+                    serial_port=self.device["serial_port"],
+                    timeout=timeout
+                )
+
+                db.save_device_info(
+                    brand=info.get("brand"),
+                    model=info.get("model"),
+                    transport="serial",
+                    protocol="nec",
+                    driver="serial_nec",
+                    reachable=1,
+                    last_seen=datetime.utcnow().isoformat()
+                )
+
+                self.device = db.get_device()
+
+                if info.get("inputs"):
+                    db.set_inputs(self.device["id"], info["inputs"])
+
+                if info.get("capabilities"):
+                    db.set_capabilities(self.device["id"], **info["capabilities"])
+
+                db.log_discovery("serial_nec", "success")
+                return True
+
+            except Exception as e:
+                db.log_discovery("serial_nec", f"fail: {e}")
+
+        # Misslyckades helt
+        db.save_device_info(reachable=0)
+        self.device = db.get_device()
+        return False
+
+    # ---------------------------------------------------------
+    #  Status
+    # ---------------------------------------------------------
+
+    def get_status(self):
+        driver = self._get_driver_module()
+        if not driver:
+
+            if not self.device:
+                print("No device configured. Run setup first.")
+                return None
+
+            if not self.discover():
+                return None
+
+            driver = self._get_driver_module()
+            if not driver:
+                return None
+
+        try:
+            status = driver.get_status(self.device)
+            db.update_status(self.device["id"], **status)
+            db.save_device_info(
+                reachable=1,
+                last_seen=datetime.utcnow().isoformat(),
+                timeout=5
+            )
+            self.device = db.get_device()
+            return status
+
+        except Exception as e:
+            print(f"Status error: {e}")
+            db.save_device_info(
+                reachable=0,
+                timeout=10
+            )
+            self.device = db.get_device()
+            return None
+
+    # ---------------------------------------------------------
+    #  Power
+    # ---------------------------------------------------------
+
+    def set_power(self, state):
+        driver = self._get_driver_module()
+        if not driver:
+            if not self.discover():
+                return None
+            driver = self._get_driver_module()
+
+        try:
+            driver.set_power(self.device, state)
+            time.sleep(1)
+            return self.get_status()
+        except Exception as e:
+            print(f"Power error: {e}")
+            return None
+
+    # ---------------------------------------------------------
+    #  Input
+    # ---------------------------------------------------------
+
+    def set_input(self, code):
+        driver = self._get_driver_module()
+        if not driver:
+            if not self.discover():
+                return None
+            driver = self._get_driver_module()
+
+        try:
+            driver.set_input(self.device, code)
+            time.sleep(0.5)
+            return self.get_status()
+        except Exception as e:
+            print(f"Input error: {e}")
+            return None
+
+    # ---------------------------------------------------------
+    #  Volume
+    # ---------------------------------------------------------
+
+    def volume_change(self, delta):
+        driver = self._get_driver_module()
+        if not driver:
+            if not self.discover():
+                return None
+            driver = self._get_driver_module()
+
+        try:
+            driver.volume_change(self.device, delta)
+            time.sleep(0.3)
+            return self.get_status()
+        except Exception as e:
+            print(f"Volume error: {e}")
+            return None
+
+    # ---------------------------------------------------------
+    #  Mute
+    # ---------------------------------------------------------
+
+    def set_mute(self, audio=None, video=None):
+        driver = self._get_driver_module()
+        if not driver:
+            if not self.discover():
+                return None
+            driver = self._get_driver_module()
+
+        try:
+            driver.set_mute(self.device, audio, video)
+            time.sleep(0.3)
+            return self.get_status()
+        except Exception as e:
+            print(f"Mute error: {e}")
+            return None
+

@@ -1,0 +1,282 @@
+import sqlite3
+from datetime import datetime
+
+DB_FILE = "projector.db"
+
+
+# ---------------------------------------------------------
+#  Connection helper
+# ---------------------------------------------------------
+
+def get_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ---------------------------------------------------------
+#  Initialization
+# ---------------------------------------------------------
+
+def init_db():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # DEVICE TABLE
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS device (
+            id INTEGER PRIMARY KEY,
+            site_id TEXT,
+            room_id TEXT,
+            brand TEXT,
+            model TEXT,
+
+            -- Network transport
+            host TEXT,
+            port_net INTEGER,
+
+            -- Serial transport
+            port_serial TEXT,
+
+            -- Transport/protocol/driver model
+            transport TEXT,      -- net, serial, ...
+            protocol TEXT,       -- pjlink, nec, ...
+            driver TEXT,         -- net_pjlink, serial_nec, ...
+
+            password TEXT,
+            timeout INTEGER,
+            reachable INTEGER,
+            last_seen TEXT
+        )
+    """)
+
+    # INPUTS TABLE
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS inputs (
+            id INTEGER PRIMARY KEY,
+            device_id INTEGER,
+            code TEXT,
+            type TEXT,
+            name TEXT,
+            FOREIGN KEY(device_id) REFERENCES device(id)
+        )
+    """)
+
+    # STATUS CACHE
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS status_cache (
+            device_id INTEGER PRIMARY KEY,
+            power TEXT,
+            input TEXT,
+            volume INTEGER,
+            mute_audio INTEGER,
+            mute_video INTEGER,
+            last_error TEXT,
+            updated TEXT,
+            FOREIGN KEY(device_id) REFERENCES device(id)
+        )
+    """)
+
+    # CAPABILITIES
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS capabilities (
+            device_id INTEGER PRIMARY KEY,
+            supports_volume INTEGER,
+            supports_mute_audio INTEGER,
+            supports_mute_video INTEGER,
+            supports_class2 INTEGER,
+            supports_input_query INTEGER,
+            FOREIGN KEY(device_id) REFERENCES device(id)
+        )
+    """)
+
+    # DISCOVERY LOG
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS discovery_log (
+            id INTEGER PRIMARY KEY,
+            timestamp TEXT,
+            method TEXT,
+            result TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------
+#  Reset
+# ---------------------------------------------------------
+
+def reset_db(keep_site_room=True):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    site = room = None
+    if keep_site_room:
+        cur.execute("SELECT site_id, room_id FROM device LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            site = row["site_id"]
+            room = row["room_id"]
+
+    cur.execute("DELETE FROM device")
+    cur.execute("DELETE FROM inputs")
+    cur.execute("DELETE FROM status_cache")
+    cur.execute("DELETE FROM capabilities")
+    cur.execute("DELETE FROM discovery_log")
+
+    if keep_site_room and site and room:
+        cur.execute("""
+            INSERT INTO device (site_id, room_id, reachable, timeout)
+            VALUES (?, ?, 0, 5)
+        """, (site, room))
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------
+#  Device CRUD
+# ---------------------------------------------------------
+
+def get_device():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM device LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def save_device_info(**kwargs):
+    device = get_device()
+    conn = get_connection()
+    cur = conn.cursor()
+
+    if device is None:
+        fields = ", ".join(kwargs.keys())
+        placeholders = ", ".join("?" for _ in kwargs)
+        cur.execute(f"INSERT INTO device ({fields}) VALUES ({placeholders})",
+                    tuple(kwargs.values()))
+    else:
+        updates = ", ".join(f"{k}=?" for k in kwargs.keys())
+        cur.execute(f"UPDATE device SET {updates} WHERE id=?",
+                    tuple(kwargs.values()) + (device["id"],))
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------
+#  Inputs
+# ---------------------------------------------------------
+
+def set_inputs(device_id, input_list):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM inputs WHERE device_id=?", (device_id,))
+
+    for inp in input_list:
+        cur.execute("""
+            INSERT INTO inputs (device_id, code, type, name)
+            VALUES (?, ?, ?, ?)
+        """, (device_id, inp["code"], inp["type"], inp["name"]))
+
+    conn.commit()
+    conn.close()
+
+
+def get_inputs(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM inputs WHERE device_id=?", (device_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+# ---------------------------------------------------------
+#  Status cache
+# ---------------------------------------------------------
+
+def update_status(device_id, **kwargs):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT device_id FROM status_cache WHERE device_id=?", (device_id,))
+    exists = cur.fetchone()
+
+    kwargs["updated"] = datetime.utcnow().isoformat()
+
+    if exists:
+        updates = ", ".join(f"{k}=?" for k in kwargs.keys())
+        cur.execute(f"UPDATE status_cache SET {updates} WHERE device_id=?",
+                    tuple(kwargs.values()) + (device_id,))
+    else:
+        fields = ", ".join(["device_id"] + list(kwargs.keys()))
+        placeholders = ", ".join("?" for _ in range(len(kwargs) + 1))
+        cur.execute(f"INSERT INTO status_cache ({fields}) VALUES ({placeholders})",
+                    (device_id,) + tuple(kwargs.values()))
+
+    conn.commit()
+    conn.close()
+
+
+def get_status(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM status_cache WHERE device_id=?", (device_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+# ---------------------------------------------------------
+#  Capabilities
+# ---------------------------------------------------------
+
+def set_capabilities(device_id, **kwargs):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT device_id FROM capabilities WHERE device_id=?", (device_id,))
+    exists = cur.fetchone()
+
+    if exists:
+        updates = ", ".join(f"{k}=?" for k in kwargs.keys())
+        cur.execute(f"UPDATE capabilities SET {updates} WHERE device_id=?",
+                    tuple(kwargs.values()) + (device_id,))
+    else:
+        fields = ", ".join(["device_id"] + list(kwargs.keys()))
+        placeholders = ", ".join("?" for _ in range(len(kwargs) + 1))
+        cur.execute(f"INSERT INTO capabilities ({fields}) VALUES ({placeholders})",
+                    (device_id,) + tuple(kwargs.values()))
+
+    conn.commit()
+    conn.close()
+
+
+def get_capabilities(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM capabilities WHERE device_id=?", (device_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+# ---------------------------------------------------------
+#  Discovery log
+# ---------------------------------------------------------
+
+def log_discovery(method, result):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO discovery_log (timestamp, method, result)
+        VALUES (?, ?, ?)
+    """, (datetime.utcnow().isoformat(), method, result))
+    conn.commit()
+    conn.close()

@@ -1,0 +1,1 @@
+# Kärnlogik: DeviceManager, DB, etc.
