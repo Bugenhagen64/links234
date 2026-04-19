@@ -125,7 +125,6 @@ def main():
         print(f"  Host:         {device.get('host')}")
         print(f"  Port:         {device.get('port')}")
         print(f"  Serial port:  {device.get('serial_port')}")
-        print()
 
         print("\n=== STATUS ===")
         if status:

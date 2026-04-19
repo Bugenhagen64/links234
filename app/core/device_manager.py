@@ -72,19 +72,16 @@ class DeviceManager:
                 db.save_inputs(device_id, info["inputs"])
 
             # 4. Spara manufacturer/model
-            fields = {}
             if "manufacturer" in info:
-                fields["manufacturer"] = info["manufacturer"]
-            if "model" in info:
-                fields["model"] = info["model"]
+                db.update_device_field(device_id, "manufacturer", info["manufacturer"])
 
-            if fields:
-                db.update_device_fields(device_id, fields)
+            if "model" in info:
+                db.update_device_field(device_id, "model", info["model"])
 
         # -----------------------------------------------------
         #  Serial discovery
         # -----------------------------------------------------
-        if "serial_port" in self.device and self.device["serial_port"]:
+        if self.device.get("serial_port"):
             try:
                 info = driver.discover_serial(self.device["serial_port"])
                 if info:
@@ -96,7 +93,7 @@ class DeviceManager:
         # -----------------------------------------------------
         #  Network discovery
         # -----------------------------------------------------
-        if "host" in self.device and self.device["host"]:
+        if self.device.get("host"):
             try:
                 info = driver.discover_net(self.device["host"], self.device["port"])
                 if info:

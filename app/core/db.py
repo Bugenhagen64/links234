@@ -303,3 +303,14 @@ def reset_db(keep_site_room=False):
 
     # Recreate schema
     ensure_schema()
+
+
+def update_device_field(device_id, field, value):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE device SET {field} = ? WHERE id = ?",
+        (value, device_id)
+    )
+    conn.commit()
+    conn.close()
