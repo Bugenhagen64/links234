@@ -8,18 +8,18 @@ import app.core.db as db
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CLI-verktyg för att styra projektorn via DeviceManager"
+        description="CLI-verktyg för att styra displayen via DeviceManager"
     )
 
     sub = parser.add_subparsers(dest="command")
 
     # ---------------------------------------------------------
-    #  setup (init + discovery + optional JSON export)
+    #  setup
     # ---------------------------------------------------------
     p_setup = sub.add_parser("setup", help="Initiera device och kör discovery")
-    p_setup.add_argument("--host", help="IP-adress till projektorn")
-    p_setup.add_argument("--port", type=int, help="TCP-port (t.ex. 4352)")
-    p_setup.add_argument("--password", help="Lösenord för nätverksprotokoll (t.ex. PJLink)")
+    p_setup.add_argument("--protocol", required=True, help="Driver-protokoll (t.ex. fake, pjlink)")
+    p_setup.add_argument("--host", help="IP-adress till enheten")
+    p_setup.add_argument("--port", type=int, help="TCP-port")
     p_setup.add_argument("--serial", help="Serial-port (t.ex. /dev/ttyUSB0)")
     p_setup.add_argument("--json", help="Spara resultatet som JSON-fil")
 
@@ -31,14 +31,14 @@ def main():
     # ---------------------------------------------------------
     #  power on/off
     # ---------------------------------------------------------
-    p_power = sub.add_parser("power", help="Slå på eller av projektorn")
+    p_power = sub.add_parser("power", help="Slå på eller av enheten")
     p_power.add_argument("state", choices=["on", "off"], help="on/off")
 
     # ---------------------------------------------------------
     #  input <code>
     # ---------------------------------------------------------
     p_input = sub.add_parser("input", help="Byt ingång")
-    p_input.add_argument("code", help="Ingångskod (t.ex. 31, 32, 41)")
+    p_input.add_argument("code", help="Ingångskod")
 
     # ---------------------------------------------------------
     #  volume +N / -N
@@ -59,43 +59,35 @@ def main():
     #  SETUP
     # ---------------------------------------------------------
     if args.command == "setup":
-        # 1. Rensa DB men behåll site/room
-        db.reset_db(keep_site_room=True)
+        db.reset_db()
 
-        # 2. Spara grundinfo
-        info = {
-            "timeout": 5,
-            "reachable": 0
+        device_info = {
+            "protocol": args.protocol,
+            "host": args.host,
+            "port": args.port,
+            "serial_port": args.serial
         }
 
-        if args.host:
-            info["host"] = args.host
-        if args.port:
-            info["port_net"] = args.port
-        if args.password:
-            info["password"] = args.password
-        if args.serial:
-            info["port_serial"] = args.serial
+        device_info = {k: v for k, v in device_info.items() if v is not None}
 
-        db.save_device_info(**info)
-        print("Grundinfo sparad:", info)
+        db.save_device(device_info)
+        print("Device sparad:", device_info)
 
-        # 3. Kör discovery
         dm = DeviceManager()
         ok = dm.discover()
 
         device = db.get_device()
         result = {
             "success": ok,
-            "device": dict(device) if device else None,
-            "inputs": [dict(i) for i in db.get_inputs(device["id"])] if ok else [],
-            "capabilities": dict(db.get_capabilities(device["id"])) if ok else {}
+            "device": device,
+            "status": db.get_status(device["id"]) if ok else None,
+            "inputs": db.get_inputs(device["id"]) if ok else [],
+            "capabilities": db.get_capabilities(device["id"]) if ok else []
         }
 
         print("Discovery:", "OK" if ok else "FAILED")
         print(json.dumps(result, indent=4))
 
-        # 4. Exportera JSON om begärt
         if args.json:
             with open(args.json, "w") as f:
                 json.dump(result, f, indent=4)
@@ -109,7 +101,58 @@ def main():
     dm = DeviceManager()
 
     if args.command == "status":
-        print(dm.get_status())
+        device = db.get_device()
+        if not device:
+            print("Ingen device konfigurerad. Kör först: setup")
+            return
+
+        device_id = device["id"]
+        status = db.get_status(device_id)
+        inputs = db.get_inputs(device_id)
+        caps = db.get_capabilities(device_id)
+
+        data = {
+            "device": device,
+            "status": status,
+            "inputs": inputs,
+            "capabilities": caps,
+        }
+
+        print("=== DEVICE ===")
+        print(f"  Manufacturer: {device.get('manufacturer') or '-'}")
+        print(f"  Model:        {device.get('model') or '-'}")
+        print(f"  Protocol:     {device.get('protocol')}")
+        print(f"  Host:         {device.get('host')}")
+        print(f"  Port:         {device.get('port')}")
+        print(f"  Serial port:  {device.get('serial_port')}")
+        print()
+
+        print("\n=== STATUS ===")
+        if status:
+            print(f"  Power:       {status.get('power')}")
+            print(f"  Input:       {status.get('input')}")
+            print(f"  Volume:      {status.get('volume')}")
+            print(f"  Audio mute:  {status.get('audio_mute')}")
+            print(f"  Video mute:  {status.get('video_mute')}")
+            print(f"  Last seen:   {status.get('last_seen')}")
+        else:
+            print("  (ingen status)")
+
+        print("\n=== INPUTS ===")
+        if inputs:
+            for inp in inputs:
+                print(f"  {inp['code']:>3}   {inp['name']}")
+        else:
+            print("  (inga inputs)")
+
+        print("\n=== CAPABILITIES ===")
+        if caps:
+            print("  " + ", ".join(caps))
+        else:
+            print("  (inga capabilities)")
+
+        print("\n=== JSON ===")
+        print(json.dumps(data, indent=4))
         return
 
     # ---------------------------------------------------------
@@ -141,9 +184,9 @@ def main():
         video = None
 
         if args.audio:
-            audio = True if args.audio == "on" else False
+            audio = args.audio == "on"
         if args.video:
-            video = True if args.video == "on" else False
+            video = args.video == "on"
 
         print(dm.set_mute(audio=audio, video=video))
         return
@@ -153,4 +196,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

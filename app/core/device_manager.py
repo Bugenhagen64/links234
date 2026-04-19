@@ -6,20 +6,24 @@ from importlib import import_module
 
 class DeviceManager:
     def __init__(self):
-        db.ensure_schema() 
-        # Load device from DB (may be None)
+        db.ensure_schema()
         self.device = db.get_device()
+
+    # ---------------------------------------------------------
+    #  Capability helper
+    # ---------------------------------------------------------
+
+    def has_capability(self, cap):
+        if not self.device:
+            return False
+        caps = db.get_capabilities(self.device["id"])
+        return cap in caps
 
     # ---------------------------------------------------------
     #  Driver loader
     # ---------------------------------------------------------
 
     def _get_driver_module(self):
-        """
-        Loads the correct driver module based on device protocol.
-        Returns the module or None if no device is configured.
-        """
-
         if not self.device:
             return None
 
@@ -38,11 +42,6 @@ class DeviceManager:
     # ---------------------------------------------------------
 
     def discover(self):
-        """
-        Attempts to discover the device using the configured protocol.
-        Returns True if discovery succeeded, False otherwise.
-        """
-
         if not self.device:
             print("No device configured. Run setup first.")
             return False
@@ -54,22 +53,54 @@ class DeviceManager:
             print("No valid driver available.")
             return False
 
-        # Serial discovery
+        device_id = self.device["id"]
+
+        # -----------------------------------------------------
+        #  Helper: merge info from driver into DB
+        # -----------------------------------------------------
+        def merge_status(info):
+            # 1. Spara statusfält
+            if "status" in info:
+                db.update_status(device_id, info["status"])
+
+            # 2. Spara capabilities
+            if "capabilities" in info:
+                db.save_capabilities(device_id, info["capabilities"])
+
+            # 3. Spara inputs
+            if "inputs" in info:
+                db.save_inputs(device_id, info["inputs"])
+
+            # 4. Spara manufacturer/model
+            fields = {}
+            if "manufacturer" in info:
+                fields["manufacturer"] = info["manufacturer"]
+            if "model" in info:
+                fields["model"] = info["model"]
+
+            if fields:
+                db.update_device_fields(device_id, fields)
+
+        # -----------------------------------------------------
+        #  Serial discovery
+        # -----------------------------------------------------
         if "serial_port" in self.device and self.device["serial_port"]:
             try:
                 info = driver.discover_serial(self.device["serial_port"])
                 if info:
-                    db.update_status(self.device["id"], info)
+                    merge_status(info)
                     return True
             except Exception as e:
                 print("Serial discovery failed:", e)
 
-        # Network discovery
+        # -----------------------------------------------------
+        #  Network discovery
+        # -----------------------------------------------------
         if "host" in self.device and self.device["host"]:
             try:
                 info = driver.discover_net(self.device["host"], self.device["port"])
                 if info:
-                    db.update_status(self.device["id"], info)
+                    merge_status(info)
                     return True
             except Exception as e:
                 print("Network discovery failed:", e)
@@ -82,70 +113,61 @@ class DeviceManager:
     # ---------------------------------------------------------
 
     def get_status(self):
-        """
-        Returns the latest known status.
-        If no device is configured, returns None.
-        """
-
         if not self.device:
             print("No device configured. Run setup first.")
-            return None
-
-        # Try discovery first
-        if not self.discover():
             return None
 
         return db.get_status(self.device["id"])
 
     # ---------------------------------------------------------
-    #  Commands
+    #  Commands (stateless)
     # ---------------------------------------------------------
 
     def set_power(self, state):
+        if not self.has_capability("power"):
+            print("Device does not support power control.")
+            return False
+
         driver = self._get_driver_module()
         if not driver:
             print("No device configured.")
             return False
 
-        ok = driver.set_power(self.device, state)
-        if ok:
-            db.update_status_field(self.device["id"], "power", state)
-        return ok
+        return driver.set_power(self.device, state)
 
     def set_input(self, code):
+        if not self.has_capability("input"):
+            print("Device does not support input switching.")
+            return False
+
         driver = self._get_driver_module()
         if not driver:
             print("No device configured.")
             return False
 
-        ok = driver.set_input(self.device, code)
-        if ok:
-            db.update_status_field(self.device["id"], "input", code)
-        return ok
+        return driver.set_input(self.device, code)
 
     def volume_change(self, delta):
+        if not self.has_capability("volume"):
+            print("Device does not support volume control.")
+            return False
+
         driver = self._get_driver_module()
         if not driver:
             print("No device configured.")
             return False
 
-        ok = driver.volume_change(self.device, delta)
-        if ok:
-            status = db.get_status(self.device["id"])
-            new_vol = (status.get("volume") or 0) + delta
-            db.update_status_field(self.device["id"], "volume", new_vol)
-        return ok
+        return driver.volume_change(self.device, delta)
 
     def set_mute(self, audio=None, video=None):
+        if not self.has_capability("mute"):
+            print("Device does not support mute.")
+            return False
+
         driver = self._get_driver_module()
         if not driver:
             print("No device configured.")
             return False
 
-        ok = driver.set_mute(self.device, audio=audio, video=video)
-        if ok:
-            if audio is not None:
-                db.update_status_field(self.device["id"], "audio_mute", audio)
-            if video is not None:
-                db.update_status_field(self.device["id"], "video_mute", video)
-        return ok
+        return driver.set_mute(self.device, audio=audio, video=video)
+

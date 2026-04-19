@@ -4,8 +4,9 @@ import json
 import os
 import time
 import threading
-import paho.mqtt.client as mqtt
 import socket
+
+import paho.mqtt.client as mqtt
 
 from app.core.device_manager import DeviceManager
 import app.core.db as db
@@ -13,6 +14,7 @@ import app.core.db as db
 MQTT_TOPIC_BASE = "display"
 MQTT_STATUS_TOPIC = f"{MQTT_TOPIC_BASE}/status"
 MQTT_COMMAND_TOPIC = f"{MQTT_TOPIC_BASE}/command/#"
+MQTT_INPUTS_TOPIC = f"{MQTT_TOPIC_BASE}/inputs"   # <-- nytt: separat inputs-topic
 
 
 class MQTTBridge:
@@ -24,19 +26,23 @@ class MQTTBridge:
 
         self.dm = DeviceManager()
         self.client = mqtt.Client()
-        self.client.tls_set()
 
-        # ⭐ Tvinga IPv4 (fixar ConnectionRefused på macOS)
+        # Tvinga IPv4 (fixar vissa miljöproblem)
         self.client.socket_options = [(socket.AF_INET, socket.SOCK_STREAM)]
 
-        if username:
-            self.client.username_pw_set(username, password)
+        if self.username:
+            self.client.username_pw_set(self.username, self.password)
 
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect
 
         self.running = True
+        self.polling = False
+
+        # Poll-cache. 
+        self.enable_poll_cache = False
+        self._last_payload = None
 
     # ---------------------------------------------------------
     #  MQTT callbacks
@@ -45,16 +51,21 @@ class MQTTBridge:
     def on_connect(self, client, userdata, flags, rc):
         print("MQTT connected:", rc)
         client.subscribe(MQTT_COMMAND_TOPIC)
+        # Publicera status direkt vid connect
+        self.publish_status()
+        # Publicera även inputs direkt (så panel kan läsa utan att fråga)
+        self.publish_inputs()
 
     def on_disconnect(self, client, userdata, rc):
         print("MQTT disconnected:", rc)
-        # Automatisk reconnect
+        # Enkel automatisk reconnect
         while self.running:
             try:
                 print("Trying to reconnect...")
                 client.reconnect()
                 break
-            except:
+            except Exception as e:
+                print("Reconnect failed:", e)
                 time.sleep(2)
 
     def on_message(self, client, userdata, msg):
@@ -65,7 +76,7 @@ class MQTTBridge:
 
         try:
             data = json.loads(payload)
-        except:
+        except Exception:
             print("Invalid JSON")
             return
 
@@ -98,41 +109,107 @@ class MQTTBridge:
             video = data.get("video")
             self.dm.set_mute(audio=audio, video=video)
 
-        # Efter varje kommando → publicera status
+        elif cmd == "inputs_get":
+            # Panelen ber uttryckligen om inputs
+            self.publish_inputs()
+            return
+
+        elif cmd == "status_get":
+            # Panelen ber uttryckligen om status
+            self.publish_status()
+            return
+
+        # Efter varje "state change"-kommando → publicera status
         self.publish_status()
 
     # ---------------------------------------------------------
-    #  Status publisher
+    #  Status / inputs payloads
     # ---------------------------------------------------------
 
-    def publish_status(self):
+    def build_payload(self):
         device = db.get_device()
         if not device:
-            return
+            return None
 
         status = db.get_status(device["id"])
         caps = db.get_capabilities(device["id"])
         inputs = db.get_inputs(device["id"])
 
         payload = {
-            "device": dict(device),
-            "status": dict(status) if status else None,
-            "capabilities": dict(caps) if caps else None,
-            "inputs": [dict(i) for i in inputs]
+            "device": device,
+            "status": status if status else None,
+            "capabilities": caps if caps else [],
+            "inputs": inputs if inputs else [],
+        }
+        return payload
+
+    def build_inputs_payload(self):
+        device = db.get_device()
+        if not device:
+            return None
+
+        inputs = db.get_inputs(device["id"])
+        return {
+            "device_id": device["id"],
+            "inputs": inputs if inputs else [],
         }
 
+    # ---------------------------------------------------------
+    #  Publishers
+    # ---------------------------------------------------------
+
+    def publish_status(self):
+        payload = self.build_payload()
+        if not payload:
+            print("No device configured, not publishing status.")
+            return
+
+        # Poll-cache: skicka bara om payload ändrats
+        if self.enable_poll_cache:
+            if payload == self._last_payload:
+                # Ingen förändring → inget att skicka
+                return
+            self._last_payload = payload
+
         self.client.publish(MQTT_STATUS_TOPIC, json.dumps(payload), retain=True)
-        print("MQTT TX:", payload)
+        print("MQTT TX status:", payload)
+
+    def publish_inputs(self):
+        payload = self.build_inputs_payload()
+        if not payload:
+            print("No device configured, not publishing inputs.")
+            return
+
+        self.client.publish(MQTT_INPUTS_TOPIC, json.dumps(payload), retain=True)
+        print("MQTT TX inputs:", payload)
+
+    def safe_poll_status(self):
+        if self.polling:
+            return  # En poll pågår redan
+
+        self.polling = True
+        try:
+            self.dm.get_status()
+            self.publish_status()
+        finally:
+            self.polling = False
+
 
     # ---------------------------------------------------------
     #  Background status loop
     # ---------------------------------------------------------
 
     def status_loop(self):
+        # Vänta innan första poll
+        time.sleep(30)
+
         while self.running:
-            self.dm.get_status()
-            self.publish_status()
-            time.sleep(5)
+            if not self.polling:
+                # Kör poll i egen tråd så MQTT-loop inte blockeras
+                threading.Thread(target=self.safe_poll_status, daemon=True).start()
+
+            time.sleep(30)  # <-- nytt intervall
+
 
     # ---------------------------------------------------------
     #  Start
@@ -156,6 +233,9 @@ if __name__ == "__main__":
         host="localhost",
         port=1883,
         username=None,
-        password=None
+        password=None,
     )
+    # Poll cache - enable:a detta när allt är klart. 
+    # Det gör så att det endast publceras info när något förändrats.
+    bridge.enable_poll_cache = False
     bridge.start()
