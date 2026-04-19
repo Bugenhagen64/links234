@@ -1,0 +1,21 @@
+[Unit]
+Description=Display MQTT Bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/till/ditt/projekt
+ExecStart=/usr/bin/python3 -m app.mqtt.mqtt_bridge
+Restart=always
+RestartSec=3
+
+# Kör som en icke-root användare om du vill
+User=pi
+Group=pi
+
+# Miljövariabler (om du använder dem)
+Environment=MQTT_HOST=central.avtjanst.com
+Environment=MQTT_PORT=1883
+
+[Install]
+WantedBy=multi-user.target

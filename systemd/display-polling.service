@@ -1,0 +1,12 @@
+[Unit]
+Description=Display Polling Service
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m app.polling
+WorkingDirectory=/home/chjo/links234
+Restart=always
+User=chjo
+
+[Install]
+WantedBy=multi-user.target
