@@ -1,0 +1,244 @@
+# db.py
+
+import sqlite3
+import os
+
+DB_PATH = "app.db"
+
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
+
+# ---------------------------------------------------------
+#  Schema
+# ---------------------------------------------------------
+
+def ensure_schema():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # Devices
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        protocol TEXT NOT NULL,
+        host TEXT,
+        port INTEGER,
+        serial_port TEXT,
+        manufacturer TEXT,
+        model TEXT
+    )
+    """)
+
+    # Status
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS status (
+        device_id INTEGER PRIMARY KEY,
+        power TEXT,
+        input TEXT,
+        volume INTEGER,
+        audio_mute BOOLEAN,
+        video_mute BOOLEAN,
+        last_seen TEXT
+    )
+    """)
+
+    # Inputs
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS inputs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        name TEXT,
+        code TEXT
+    )
+    """)
+
+    # Capabilities
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS capabilities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        capability TEXT
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------
+#  Device
+# ---------------------------------------------------------
+
+def reset_db():
+    if os.path.exists(DB_PATH):
+        os.remove(DB_PATH)
+    ensure_schema()
+
+
+def save_device(device_info: dict):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO devices (protocol, host, port, serial_port, manufacturer, model)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        device_info.get("protocol"),
+        device_info.get("host"),
+        device_info.get("port"),
+        device_info.get("serial_port"),
+        device_info.get("manufacturer"),
+        device_info.get("model"),
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_device():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM devices LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "id": row[0],
+        "protocol": row[1],
+        "host": row[2],
+        "port": row[3],
+        "serial_port": row[4],
+        "manufacturer": row[5],
+        "model": row[6],
+    }
+
+
+def update_device_field(device_id, field, value):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE devices SET {field} = ? WHERE id = ?", (value, device_id))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------
+#  Status
+# ---------------------------------------------------------
+
+def update_status(device_id, status_dict):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM status WHERE device_id = ?", (device_id,))
+    cur.execute("""
+        INSERT INTO status (device_id, power, input, volume, audio_mute, video_mute, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+    """, (
+        device_id,
+        status_dict.get("power"),
+        status_dict.get("input"),
+        status_dict.get("volume"),
+        status_dict.get("audio_mute"),
+        status_dict.get("video_mute"),
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def update_status_field(device_id, field, value):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE status SET {field} = ?, last_seen = datetime('now') WHERE device_id = ?", (value, device_id))
+    conn.commit()
+    conn.close()
+
+
+def get_status(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM status WHERE device_id = ?", (device_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return {
+        "device_id": row[0],
+        "power": row[1],
+        "input": row[2],
+        "volume": row[3],
+        "audio_mute": row[4],
+        "video_mute": row[5],
+        "last_seen": row[6],
+    }
+
+
+# ---------------------------------------------------------
+#  Inputs
+# ---------------------------------------------------------
+
+def save_inputs(device_id, inputs):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM inputs WHERE device_id = ?", (device_id,))
+
+    for inp in inputs:
+        cur.execute("""
+            INSERT INTO inputs (device_id, name, code)
+            VALUES (?, ?, ?)
+        """, (device_id, inp["name"], inp["code"]))
+
+    conn.commit()
+    conn.close()
+
+
+def get_inputs(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, device_id, name, code FROM inputs WHERE device_id = ?", (device_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {"id": r[0], "device_id": r[1], "name": r[2], "code": r[3]}
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------
+#  Capabilities
+# ---------------------------------------------------------
+
+def save_capabilities(device_id, caps):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM capabilities WHERE device_id = ?", (device_id,))
+
+    for cap in caps:
+        cur.execute("""
+            INSERT INTO capabilities (device_id, capability)
+            VALUES (?, ?)
+        """, (device_id, cap))
+
+    conn.commit()
+    conn.close()
+
+
+def get_capabilities(device_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT capability FROM capabilities WHERE device_id = ?", (device_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    return [r[0] for r in rows]
+

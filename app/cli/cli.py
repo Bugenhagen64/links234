@@ -134,6 +134,32 @@ def main():
             print(f"  Audio mute:  {status.get('audio_mute')}")
             print(f"  Video mute:  {status.get('video_mute')}")
             print(f"  Last seen:   {status.get('last_seen')}")
+
+            # Lampor
+            lamps = status.get("lamps")
+            if lamps:
+                print("\n  Lamps:")
+                for i, lamp in enumerate(lamps):
+                    hours = lamp.get("hours")
+                    on = lamp.get("on")
+                    print(f"    Lamp {i+1}: {hours} h, {'ON' if on else 'OFF'}")
+
+            # Felstatus
+            errors = status.get("errors")
+            if errors:
+                print("\n  Errors:")
+                error_names = {
+                    "fan": "Fan",
+                    "lamp": "Lamp",
+                    "temperature": "Temperature",
+                    "cover": "Cover",
+                    "filter": "Filter",
+                    "other": "Other"
+                }
+                for key, value in errors.items():
+                    if value != "0":  # 0 = OK
+                        print(f"    {error_names.get(key, key)}: {value}")
+
         else:
             print("  (ingen status)")
 

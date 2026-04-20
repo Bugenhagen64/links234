@@ -38,6 +38,21 @@ def _base_discovery():
             "volume": 10,
             "audio_mute": False,
             "video_mute": False,
+
+            # Lägg till lampor
+            "lamps": [
+                {"hours": 1234, "on": False}
+            ],
+
+            # Lägg till felstatus
+            "errors": {
+                "fan": "0",
+                "lamp": "0",
+                "temperature": "0",
+                "cover": "0",
+                "filter": "0",
+                "other": "0"
+            }
         },
         "manufacturer": "FakeCo",
         "model": "VirtualDisplay 9000",

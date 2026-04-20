@@ -1,114 +1,209 @@
-# pjlink_driver.py
+# pjlink_net_driver.py
+#
+# Full PJLink Class 1 driver
+# Stöd för:
+# - INF1 (manufacturer)
+# - INF2 (model)
+# - POWR (power)
+# - INPT (input)
+# - AVMT (mute)
+# - INST (input list)
+# - ERST (error status)
+# - LAMP (lamp hours)
+#
+# Discovery returnerar ett info-dict som DeviceManager kan spara direkt.
 
+import socket
 import re
-from app.transport.transport_net import send_tcp
-
-
-PJLINK_PORT = 4352
 
 
 # ---------------------------------------------------------
-#  Helpers
+#  Low-level PJLink communication
 # ---------------------------------------------------------
 
-def _parse_pjlink_response(resp):
+def _send(host, port, command, timeout=2):
     """
-    Tar bort PJLINK-header och returnerar ren payload.
-    Exempel:
-        "PJLINK 0OK" → "OK"
-        "PJLINK 0ER401" → "ER401"
+    Skickar ett PJLink-kommando och returnerar svaret som sträng.
+    Hanterar Class 1 (ingen auth).
     """
-    if resp.startswith("PJLINK"):
-        return resp.split(" ", 1)[1].strip()
-    return resp.strip()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+
+        # Läs initial greeting
+        greeting = s.recv(1024).decode().strip()
+
+        # Class 1: ska börja med PJLINK 0
+        if not greeting.startswith("PJLINK 0"):
+            return None
+
+        # Skicka kommandot
+        s.send((command + "\r").encode())
+
+        # Läs svar
+        resp = s.recv(1024).decode().strip()
+        s.close()
+
+        # Format: "%1POWR=OK" eller "%1POWR=ERR3"
+        if "=" in resp:
+            return resp.split("=", 1)[1].strip()
+
+        return None
+
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------
-#  Discovery
+#  Discovery helpers
 # ---------------------------------------------------------
 
-def discover(host, password=None, timeout=5):
-    """
-    Testar om projektorn svarar på PJLink.
-    Returnerar:
-        {
-            "brand": "...",
-            "model": "...",
-            "inputs": [...],
-            "capabilities": {...}
-        }
-    """
-    # Fråga om modellnamn
-    resp = send_tcp(host, PJLINK_PORT, "%1INF1 ?", timeout)
-    payload = _parse_pjlink_response(resp)
+def _get_manufacturer(host, port):
+    return _send(host, port, "%1INF1 ?")
 
-    if payload.startswith("ER"):
-        raise Exception(f"PJLink error: {payload}")
 
-    model = payload
+def _get_model(host, port):
+    return _send(host, port, "%1INF2 ?")
 
-    # Inputs
-    resp = send_tcp(host, PJLINK_PORT, "%1INPT ?", timeout)
-    payload = _parse_pjlink_response(resp)
 
-    inputs = []
-    if payload and payload[0].isdigit():
-        for code in payload.split():
-            inputs.append({
-                "code": code,
-                "type": "unknown",
-                "name": f"Input {code}"
-            })
-
-    # Capabilities (PJLink Class 1)
-    capabilities = {
-        "supports_volume": 0,
-        "supports_mute_audio": 1,
-        "supports_mute_video": 1,
-        "supports_class2": 0,
-        "supports_input_query": 1
-    }
-
+def _get_power(host, port):
+    resp = _send(host, port, "%1POWR ?")
     return {
-        "brand": "Unknown (PJLink)",
-        "model": model,
-        "inputs": inputs,
-        "capabilities": capabilities
-    }
-
-
-# ---------------------------------------------------------
-#  Status
-# ---------------------------------------------------------
-
-def get_status(device):
-    host = device["host"]
-    timeout = device["timeout"]
-
-    # Power
-    resp = send_tcp(host, PJLINK_PORT, "%1POWR ?", timeout)
-    power = _parse_pjlink_response(resp)
-
-    power_map = {
         "0": "off",
         "1": "on",
         "2": "cooling",
         "3": "warming"
-    }
-    power_state = power_map.get(power, "unknown")
+    }.get(resp, "unknown")
 
-    # Input
-    resp = send_tcp(host, PJLINK_PORT, "%1INPT ?", timeout)
-    input_code = _parse_pjlink_response(resp)
+
+def _get_input(host, port):
+    resp = _send(host, port, "%1INPT ?")
+    return resp  # ex: "31"
+
+
+def _get_mute(host, port):
+    resp = _send(host, port, "%1AVMT ?")
+    if not resp:
+        return {"audio_mute": False, "video_mute": False}
+
+    # Format: "11" = audio mute ON, video mute ON
+    audio = resp[0] == "1"
+    video = resp[1] == "1"
+    return {"audio_mute": audio, "video_mute": video}
+
+
+def _get_inputs(host, port):
+    resp = _send(host, port, "%1INST ?")
+    if not resp:
+        return []
+
+    # Format: "11 21 31 32"
+    codes = resp.split()
+    result = []
+    for code in codes:
+        # Minimal mapping
+        name = {
+            "11": "RGB 1",
+            "12": "RGB 2",
+            "21": "Video",
+            "22": "S-Video",
+            "31": "HDMI 1",
+            "32": "HDMI 2",
+            "33": "HDMI 3",
+        }.get(code, f"Input {code}")
+
+        result.append({"name": name, "code": code})
+
+    return result
+
+
+def _get_lamps(host, port):
+    resp = _send(host, port, "%1LAMP ?")
+    if not resp:
+        return []
+
+    # Format: "1234 1 0 0" (hours1 on1 hours2 on2 ...)
+    parts = resp.split()
+    lamps = []
+
+    # Varje lampa består av två värden
+    for i in range(0, len(parts), 2):
+        try:
+            hours = int(parts[i])
+            on = parts[i + 1] == "1"
+            lamps.append({"hours": hours, "on": on})
+        except Exception:
+            pass
+
+    return lamps
+
+
+def _get_errors(host, port):
+    resp = _send(host, port, "%1ERST ?")
+    if not resp or len(resp) < 6:
+        return {}
 
     return {
-        "power": power_state,
-        "input": input_code,
-        "volume": None,
-        "mute_audio": None,
-        "mute_video": None,
-        "last_error": None
+        "fan": resp[0],
+        "lamp": resp[1],
+        "temperature": resp[2],
+        "cover": resp[3],
+        "filter": resp[4],
+        "other": resp[5],
     }
+
+
+# ---------------------------------------------------------
+#  Discovery API
+# ---------------------------------------------------------
+
+def discover_net(host, port):
+    """
+    Returnerar ett info-dict som DeviceManager sparar i DB.
+    """
+    info = {}
+
+    # Manufacturer / Model
+    info["manufacturer"] = _get_manufacturer(host, port)
+    info["model"] = _get_model(host, port)
+
+    # Status
+    status = {}
+    status["power"] = _get_power(host, port)
+    status["input"] = _get_input(host, port)
+
+    mute = _get_mute(host, port)
+    status["audio_mute"] = mute["audio_mute"]
+    status["video_mute"] = mute["video_mute"]
+
+    # Lampor (kan vara tom lista för skärmar)
+    lamps = _get_lamps(host, port)
+    if lamps:
+        status["lamps"] = lamps
+
+    # Felstatus
+    errors = _get_errors(host, port)
+    if errors:
+        status["errors"] = errors
+
+    info["status"] = status
+
+    # Inputs
+    info["inputs"] = _get_inputs(host, port)
+
+    # Capabilities
+    caps = ["power", "input", "mute"]
+    if lamps:
+        caps.append("lamp")
+    info["capabilities"] = caps
+
+    return info
+
+
+def discover_serial(port):
+    # PJLink är nätverksbaserat – ingen serial
+    return None
 
 
 # ---------------------------------------------------------
@@ -117,43 +212,39 @@ def get_status(device):
 
 def set_power(device, state):
     host = device["host"]
-    timeout = device["timeout"]
-
-    cmd = "%1POWR 1" if state == "on" else "%1POWR 0"
-    resp = send_tcp(host, PJLINK_PORT, cmd, timeout)
-    payload = _parse_pjlink_response(resp)
-
-    if payload != "OK":
-        raise Exception(f"PJLink power error: {payload}")
+    port = device["port"]
+    cmd = "1" if state == "on" else "0"
+    resp = _send(host, port, f"%1POWR {cmd}")
+    return resp == "OK"
 
 
 def set_input(device, code):
     host = device["host"]
-    timeout = device["timeout"]
-
-    resp = send_tcp(host, PJLINK_PORT, f"%1INPT {code}", timeout)
-    payload = _parse_pjlink_response(resp)
-
-    if payload != "OK":
-        raise Exception(f"PJLink input error: {payload}")
+    port = device["port"]
+    resp = _send(host, port, f"%1INPT {code}")
+    return resp == "OK"
 
 
 def volume_change(device, delta):
-    raise NotImplementedError("PJLink Class 1 har ingen volymkontroll")
+    # PJLink Class 1 har inget volymkommando
+    return False
 
 
 def set_mute(device, audio=None, video=None):
     host = device["host"]
-    timeout = device["timeout"]
+    port = device["port"]
+
+    # Hämta nuvarande mute-status
+    mute = _get_mute(host, port)
+    audio_mute = mute["audio_mute"]
+    video_mute = mute["video_mute"]
 
     if audio is not None:
-        cmd = "%1AVMT 1" if audio else "%1AVMT 0"
-        resp = send_tcp(host, PJLINK_PORT, cmd, timeout)
-        if _parse_pjlink_response(resp) != "OK":
-            raise Exception("PJLink audio mute error")
-
+        audio_mute = audio
     if video is not None:
-        cmd = "%1AVMT 3" if video else "%1AVMT 2"
-        resp = send_tcp(host, PJLINK_PORT, cmd, timeout)
-        if _parse_pjlink_response(resp) != "OK":
-            raise Exception("PJLink video mute error")
+        video_mute = video
+
+    cmd = f"{int(audio_mute)}{int(video_mute)}"
+    resp = _send(host, port, f"%1AVMT {cmd}")
+    return resp == "OK"
+
