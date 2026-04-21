@@ -41,7 +41,7 @@ def _base_discovery():
 
             # Lägg till lampor
             "lamps": [
-                {"hours": 1234, "on": False}
+                {"hours": 1235, "on": False}
             ],
 
             # Lägg till felstatus

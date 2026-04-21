@@ -248,3 +248,40 @@ def set_mute(device, audio=None, video=None):
     resp = _send(host, port, f"%1AVMT {cmd}")
     return resp == "OK"
 
+# ---------------------------------------------------------
+#  Status (för polling)
+# ---------------------------------------------------------
+
+def get_status(device):
+    host = device["host"]
+    port = device["port"]
+
+    # Testa om projektorn svarar på greeting
+    greeting = _send(host, port, "%1POWR ?")
+    if greeting is None:
+        return None   # <-- SIGNALERA FEL
+
+    status = {}
+
+    # Power
+    status["power"] = _get_power(host, port)
+
+    # Input
+    status["input"] = _get_input(host, port)
+
+    # Mute
+    mute = _get_mute(host, port)
+    status["audio_mute"] = mute["audio_mute"]
+    status["video_mute"] = mute["video_mute"]
+
+    # Lamps
+    lamps = _get_lamps(host, port)
+    if lamps:
+        status["lamps"] = lamps
+
+    # Errors
+    errors = _get_errors(host, port)
+    if errors:
+        status["errors"] = errors
+
+    return status

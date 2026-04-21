@@ -87,14 +87,20 @@ def get_status(device_id):
     cur = conn.cursor()
     cur.execute("SELECT * FROM status WHERE device_id = ?", (device_id,))
     row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    status = dict(row)
 
     if row["errors"]:
         status["errors"] = json.loads(row["errors"])
+
     if row["lamps"]:
         status["lamps"] = json.loads(row["lamps"])
 
-    conn.close()
-    return dict(row) if row else None
+    return status
 
 
 def update_status(device_id, status_dict):
@@ -107,14 +113,16 @@ def update_status(device_id, status_dict):
     cur.execute("DELETE FROM status WHERE device_id = ?", (device_id,))
 
     status_dict = {"device_id": device_id, **status_dict}
-    columns = ", ".join(status_dict.keys())
-    placeholders = ", ".join("?" for _ in status_dict)
-    values = list(status_dict.values())
 
     if "errors" in status_dict:
         status_dict["errors"] = json.dumps(status_dict["errors"])
+
     if "lamps" in status_dict:
         status_dict["lamps"] = json.dumps(status_dict["lamps"])
+
+    columns = ", ".join(status_dict.keys())
+    placeholders = ", ".join("?" for _ in status_dict)
+    values = list(status_dict.values())
 
     cur.execute(f"INSERT INTO status ({columns}) VALUES ({placeholders})", values)
     conn.commit()
@@ -328,3 +336,13 @@ def update_device_field(device_id, field, value):
     )
     conn.commit()
     conn.close()
+
+def mark_device_unreachable(device_id):
+    status = get_status(device_id)
+    if status:
+        status["power"] = "unknown"
+        status["input"] = None
+        status["audio_mute"] = None
+        status["video_mute"] = None
+        # lampor och errors kan också nollas om du vill
+        update_status(device_id, status)

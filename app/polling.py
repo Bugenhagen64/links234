@@ -5,7 +5,7 @@ import traceback
 from app.core.device_manager import DeviceManager
 import app.core.db as db
 
-def polling_loop(interval=2):
+def polling_loop(interval=10):
     print(f"[POLLING] Started (interval={interval}s)")
 
     while True:
@@ -20,6 +20,11 @@ def polling_loop(interval=2):
 
             # Driver must implement get_status()
             info = driver.get_status(dm.device)
+
+            if info is None:
+                print("Projector unreachable, keeping old status")
+                db.mark_device_unreachable(dm.device["id"])
+                continue  # <-- hoppa över DB-update
 
             current = db.get_status(dm.device["id"])
 
