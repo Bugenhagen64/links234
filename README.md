@@ -33,3 +33,8 @@ db.save_device({
 print("Fake device added.")
 EOF
 -------------------------------
+
+
+Kör setup på en pjlink enhet
+------------------------------
+python3 -m app.cli.cli setup --protocol pjlink_net --host 192.168.1.20 --port 4352

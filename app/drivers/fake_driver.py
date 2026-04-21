@@ -4,10 +4,27 @@
 # Används för utveckling utan hårdvara.
 
 # ---------------------------------------------------------
-#  Capabilities
+#  Driver metadata
 # ---------------------------------------------------------
 
-capabilities = ["power", "input", "volume", "mute"]
+supports_autodetect = False   # Fake ska ALDRIG autodetekteras
+
+# Protokoll‑nivåns möjligheter (UI‑universet)
+base_capabilities = {
+    "power": True,
+    "input": True,
+    "volume": True,
+    "mute_audio": True,
+    "mute_video": True,
+    "freeze": True,
+    "shutter": True,
+    "lamp_hours": True,
+    "errors": True,
+    "lens_shift": True,
+    "zoom": True,
+    "focus": True,
+    "class2": True
+}
 
 # ---------------------------------------------------------
 #  Inputs
@@ -26,11 +43,10 @@ inputs = [
 
 def _base_discovery():
     """
-    Returnerar capabilities, inputs, initial status,
+    Returnerar inputs, initial status,
     samt märke och modell.
     """
     return {
-        "capabilities": capabilities,
         "inputs": inputs,
         "status": {
             "power": "off",
@@ -39,12 +55,12 @@ def _base_discovery():
             "audio_mute": False,
             "video_mute": False,
 
-            # Lägg till lampor
+            # Lampor
             "lamps": [
                 {"hours": 1235, "on": False}
             ],
 
-            # Lägg till felstatus
+            # Felstatus
             "errors": {
                 "fan": "0",
                 "lamp": "0",
@@ -59,11 +75,9 @@ def _base_discovery():
     }
 
 def discover_serial(port):
-    # Fake: port ignoreras
     return _base_discovery()
 
 def discover_net(host, port):
-    # Fake: host/port ignoreras
     return _base_discovery()
 
 # ---------------------------------------------------------
@@ -71,9 +85,6 @@ def discover_net(host, port):
 # ---------------------------------------------------------
 
 def get_status(device):
-    """
-    Fake-status hämtas från DB.
-    """
     import app.core.db as db
     return db.get_status(device["id"])
 
@@ -118,4 +129,3 @@ def set_mute(device, audio=None, video=None):
     if video is not None:
         db.update_status_field(device["id"], "video_mute", video)
     return True
-

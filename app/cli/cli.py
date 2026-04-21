@@ -172,9 +172,11 @@ def main():
 
         print("\n=== CAPABILITIES ===")
         if caps:
-            print("  " + ", ".join(caps))
+            for cap in caps:
+                print(f"  - {cap}")
         else:
             print("  (inga capabilities)")
+
 
         print("\n=== JSON ===")
         print(json.dumps(data, indent=4))

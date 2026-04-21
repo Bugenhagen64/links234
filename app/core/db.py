@@ -30,22 +30,20 @@ def get_device():
     cur.execute("SELECT * FROM device LIMIT 1")
     row = cur.fetchone()
     conn.close()
-    return dict(row) if row else None
+
+    if not row:
+        return None
+
+    return dict(row)
 
 
 def save_device(device_dict):
-    """
-    device_dict must contain:
-    protocol, host, port, serial_port, etc.
-    """
-
     conn = get_connection()
     cur = conn.cursor()
 
-    # Remove old device (only one supported)
+    # Remove old device
     cur.execute("DELETE FROM device")
 
-    # Insert new device
     columns = ", ".join(device_dict.keys())
     placeholders = ", ".join("?" for _ in device_dict)
     values = list(device_dict.values())
@@ -53,29 +51,9 @@ def save_device(device_dict):
     cur.execute(f"INSERT INTO device ({columns}) VALUES ({placeholders})", values)
     conn.commit()
 
-    # Get new device ID
     device_id = cur.lastrowid
-
-    # --- Save capabilities from driver ---
-    try:
-        protocol = device_dict.get("protocol")
-        if protocol:
-            module = import_module(f"app.drivers.{protocol}_driver")
-
-            # Clear old capabilities
-            clear_capabilities(device_id)
-
-            # Save new capabilities
-            if hasattr(module, "capabilities"):
-                for cap in module.capabilities:
-                    add_capability(device_id, cap)
-            else:
-                print(f"Driver {protocol} has no capabilities attribute")
-
-    except Exception as e:
-        print("Failed to load capabilities:", e)
-
     conn.close()
+    return device_id
 
 
 # ---------------------------------------------------------
@@ -94,11 +72,19 @@ def get_status(device_id):
 
     status = dict(row)
 
+    # JSON-dekoda errors
     if row["errors"]:
-        status["errors"] = json.loads(row["errors"])
+        try:
+            status["errors"] = json.loads(row["errors"])
+        except Exception:
+            status["errors"] = {}
 
+    # JSON-dekoda lamps
     if row["lamps"]:
-        status["lamps"] = json.loads(row["lamps"])
+        try:
+            status["lamps"] = json.loads(row["lamps"])
+        except Exception:
+            status["lamps"] = []
 
     return status
 
@@ -114,9 +100,9 @@ def update_status(device_id, status_dict):
 
     status_dict = {"device_id": device_id, **status_dict}
 
+    # JSON-serialisera
     if "errors" in status_dict:
         status_dict["errors"] = json.dumps(status_dict["errors"])
-
     if "lamps" in status_dict:
         status_dict["lamps"] = json.dumps(status_dict["lamps"])
 
@@ -177,15 +163,24 @@ def clear_capabilities(device_id):
     conn.commit()
     conn.close()
 
+
 def save_capabilities(device_id, capabilities):
+    """
+    capabilities kan vara:
+      - lista: ["power", "input", ...]
+      - dict: {"power": True, "input": False, ...}
+    """
     conn = get_connection()
     cur = conn.cursor()
 
-    # Rensa gamla capabilities
     cur.execute("DELETE FROM capabilities WHERE device_id = ?", (device_id,))
 
-    # Lägg in nya
-    for cap in capabilities:
+    if isinstance(capabilities, dict):
+        caps = [k for k, v in capabilities.items() if v]
+    else:
+        caps = list(capabilities)
+
+    for cap in caps:
         cur.execute(
             "INSERT INTO capabilities (device_id, capability) VALUES (?, ?)",
             (device_id, cap)
@@ -193,6 +188,7 @@ def save_capabilities(device_id, capabilities):
 
     conn.commit()
     conn.close()
+
 
 # ---------------------------------------------------------
 #  Inputs
@@ -228,14 +224,13 @@ def delete_input(device_id, code):
     conn.commit()
     conn.close()
 
+
 def save_inputs(device_id, inputs):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Rensa gamla inputs
     cur.execute("DELETE FROM inputs WHERE device_id = ?", (device_id,))
 
-    # Lägg in nya
     for inp in inputs:
         cur.execute(
             "INSERT INTO inputs (device_id, name, code) VALUES (?, ?, ?)",
@@ -244,6 +239,7 @@ def save_inputs(device_id, inputs):
 
     conn.commit()
     conn.close()
+
 
 # ---------------------------------------------------------
 #  Schema
@@ -261,7 +257,8 @@ def ensure_schema():
         port INTEGER,
         serial_port TEXT,
         manufacturer TEXT,
-        model TEXT
+        model TEXT,
+        password TEXT
     )
     """)
 
@@ -302,8 +299,12 @@ def ensure_schema():
     conn.commit()
     conn.close()
 
+
+# ---------------------------------------------------------
+#  Misc
+# ---------------------------------------------------------
+
 def update_last_seen(device_id):
-    # Använd lokal tid med timezone
     now = datetime.now(ZoneInfo("Europe/Stockholm")).isoformat()
 
     conn = get_connection()
@@ -315,19 +316,25 @@ def update_last_seen(device_id):
     conn.commit()
     conn.close()
 
+
 def reset_db(keep_site_room=False):
-    """
-    Deletes the database file and recreates an empty schema.
-    keep_site_room is ignored (kept for CLI compatibility).
-    """
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
-
-    # Recreate schema
     ensure_schema()
 
 
 def update_device_field(device_id, field, value):
+    """
+    Säker uppdatering av ett fält i device-tabellen.
+    """
+    allowed = {
+        "protocol", "host", "port", "serial_port",
+        "manufacturer", "model", "password", "capabilities"
+    }
+
+    if field not in allowed:
+        raise ValueError(f"Illegal device field: {field}")
+
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -337,6 +344,7 @@ def update_device_field(device_id, field, value):
     conn.commit()
     conn.close()
 
+
 def mark_device_unreachable(device_id):
     status = get_status(device_id)
     if status:
@@ -344,5 +352,4 @@ def mark_device_unreachable(device_id):
         status["input"] = None
         status["audio_mute"] = None
         status["video_mute"] = None
-        # lampor och errors kan också nollas om du vill
         update_status(device_id, status)
