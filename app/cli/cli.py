@@ -21,6 +21,7 @@ def main():
     p_setup.add_argument("--host", help="IP-adress till enheten")
     p_setup.add_argument("--port", type=int, help="TCP-port")
     p_setup.add_argument("--serial", help="Serial-port (t.ex. /dev/ttyUSB0)")
+    p_setup.add_argument("--password", help="Lösenord för protokollet (t.ex. PJLink)")
     p_setup.add_argument("--json", help="Spara resultatet som JSON-fil")
 
     # ---------------------------------------------------------
@@ -65,7 +66,8 @@ def main():
             "protocol": args.protocol,
             "host": args.host,
             "port": args.port,
-            "serial_port": args.serial
+            "serial_port": args.serial,
+            "password": args.password
         }
 
         device_info = {k: v for k, v in device_info.items() if v is not None}
